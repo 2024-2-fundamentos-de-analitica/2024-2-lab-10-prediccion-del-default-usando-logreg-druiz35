@@ -95,3 +95,90 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+from sklearn.model_selection import train_test_split, cross_val_score # type: ignore
+from sklearn.preprocessing import OneHotEncoder, MinMaxScaler # type: ignore
+from sklearn.pipeline import Pipeline # type: ignore
+from sklearn.compose import ColumnTransformer # type: ignore
+from sklearn.feature_selection import SelectKBest, f_classif # type: ignore
+from sklearn.linear_model import LogisticRegression # type: ignore
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix # type: ignore
+import json
+import pandas as pd
+import numpy as np
+import gzip
+import pickle
+
+
+def load_clean(file):
+    df = pd.read_csv(file)
+    df.rename(columns={'default payment next month': 'default'}, inplace=True)
+    df.drop(columns=['ID'], inplace=True)
+    df = df.dropna()
+    df['EDUCATION'] = df['EDUCATION'].apply(lambda x: x if x <= 4 else 4)
+    return df
+
+train_file = "files/input/train_default_of_credit_card_clients.csv"
+test_file = "files/input/test_default_of_credit_card_clients.csv"
+df_train = load_clean(train_file)
+df_test = load_clean(test_file)
+
+x_train, y_train = df_train.drop(columns=['default']), df_train['default']
+x_test, y_test = df_test.drop(columns=['default']), df_test['default']
+
+categorical_features = ['SEX', 'EDUCATION', 'MARRIAGE']
+numerical_features = list(set(x_train.columns) - set(categorical_features))
+
+preprocessor = ColumnTransformer([
+    ('onehot', OneHotEncoder(handle_unknown='ignore'), categorical_features),
+    ('scaler', MinMaxScaler(), numerical_features)
+])
+
+pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('feature_selection', SelectKBest(score_func=f_classif, k=10)),
+    ('classifier', LogisticRegression(solver='liblinear'))
+])
+
+cv_scores = cross_val_score(pipeline, x_train, y_train, cv=10, scoring='balanced_accuracy')
+print(f'Balanced Accuracy (CV mean): {np.mean(cv_scores):.4f}')
+
+pipeline.fit(x_train, y_train)
+
+model_path = "files/models/model.pkl.gz"
+with gzip.open(model_path, 'wb') as f:
+    pickle.dump(pipeline, f)
+
+def compute_metrics(model, x, y, dataset_type):
+    y_pred = model.predict(x)
+    metrics = {
+    'type': 'metrics',
+    'dataset': dataset_type,
+    'precision': float(precision_score(y, y_pred)),
+    'balanced_accuracy': float(balanced_accuracy_score(y, y_pred)),
+    'recall': float(recall_score(y, y_pred)),
+    'f1_score': float(f1_score(y, y_pred))
+    }
+    return metrics
+
+metrics_train = compute_metrics(pipeline, x_train, y_train, 'train')
+metrics_test = compute_metrics(pipeline, x_test, y_test, 'test')
+
+def confusion(model, x, y, dataset_type):
+    y_pred = model.predict(x)
+    cm = confusion_matrix(y, y_pred)
+    cm_dict = {
+    'type': 'cm_matrix',
+    'dataset': dataset_type,
+    'true_0': {"predicted_0": int(cm[0, 0]), "predicted_1": int(cm[0, 1])},
+    'true_1': {"predicted_0": int(cm[1, 0]), "predicted_1": int(cm[1, 1])}
+    }
+    return cm_dict
+
+cm_train = confusion(pipeline, x_train, y_train, 'train')
+cm_test = confusion(pipeline, x_test, y_test, 'test')
+
+metrics_path = "files/output/metrics.json"
+with open(metrics_path, 'w') as f:
+    for item in [metrics_train, metrics_test, cm_train, cm_test]:
+        f.write(json.dumps(item) + "\n")
